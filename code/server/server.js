@@ -59,7 +59,9 @@ app.get('/', (req, res) => {
 //        key: <STRIPE_PUBLISHABLE_KEY>
 //   }
 app.get("/config", (req, res) => {
-  // TODO: Integrate Stripe
+  res.json({
+    key: process.env.STRIPE_PUBLISHABLE_KEY
+  })
 });
 
 // Milestone 1: Signing up
@@ -75,7 +77,49 @@ app.get('/lessons', (req, res) => {
   }
 });
 
-// TODO: Integrate Stripe
+app.post('/create-setup-intent', async (req, res) => {
+  const stripe = require('stripe')(`${process.env.STRIPE_SECRET_KEY}`);
+    const customerId = req.body.customerId
+    let customer = null
+
+    const existingCustomer = await stripe.customers.search(
+      {
+        query: `name:\'${req.body.name}\' AND email:\'${req.body.email}\'`,
+      }
+    )
+    
+    if (existingCustomer.data.length) {
+      customer = existingCustomer.data[0]
+    } else {
+      customer = await stripe.customers.create({
+        name: req.body.name, 
+        email: req.body.email,
+        metadata: { 
+          'first_lesson': `${req.body.lesson}`,
+        }
+      });
+    }
+
+    const ephemeralKey = await stripe.ephemeralKeys.create(
+      {customer: customer.id},
+      {apiVersion: '2023-08-16'}
+    );
+    const setupIntent = await stripe.setupIntents.create({
+      customer: customer.id,
+      // In the latest version of the API, specifying the `automatic_payment_methods` parameter is optional because Stripe enables its functionality by default.
+      // usage: 'off_session',
+      automatic_payment_methods: {
+        enabled: true,
+      },
+    })
+    res.json({
+      setupIntent,
+      clientSecret: setupIntent.client_secret,
+      ephemeralKey: ephemeralKey.secret,
+      customer: customer,
+      publishableKey: `${process.env.STRIPE_PUBLISHABLE_KEY}`
+    })
+});
 
 // Milestone 2: '/schedule-lesson'
 // Authorize a payment for a lesson
@@ -106,7 +150,43 @@ app.get('/lessons', (req, res) => {
 //    payment_intent_id: if a payment intent was created but not successfully authorized
 // }
 app.post("/schedule-lesson", async (req, res) => {
-  // TODO: Integrate Stripe
+  const customer = req.body.customer_id
+  try {
+
+    let paymentIntent = await stripe.paymentIntents.create({
+      customer,
+      amount: req.body.amount,
+      description:  req.body.description,
+      currency: 'usd',
+      metadata: { 
+        'type': 'lessons-payment'
+      },
+      payment_method_types: ['card'],
+      capture_method: 'manual',
+    })
+
+    const paymentMethodsList = await await stripe.paymentMethods.list({
+      customer,
+      type: 'card'
+    });
+
+    const paymentConfirm =  await stripe.paymentIntents.confirm(
+      paymentIntent.id,
+      { payment_method: "pm_card_visa" }
+    );
+
+    res.json({ payment: paymentConfirm})
+  } catch (e) {
+    if (e.code === 'resource_missing') {
+      const error = {
+        code: e.code,
+        message: `No such customer: '${customer}'`
+      }
+      res.json({ error })
+    } else {
+      res.json({ error: e })
+    }
+  }
 });
 
 
@@ -136,7 +216,26 @@ app.post("/schedule-lesson", async (req, res) => {
 // }
 //
 app.post("/complete-lesson-payment", async (req, res) => {
-  // TODO: Integrate Stripe
+  const {payment_intent_id, amount } = req.body
+  try {
+
+    let payment = await stripe.paymentIntents.capture(
+      payment_intent_id,
+      { amount_to_capture: amount }
+    )
+
+    res.json({ payment })
+  } catch (e) {
+    if (e.code === 'resource_missing') {
+      const error = {
+        code: e.code,
+        message: `No such payment_intent: '${payment_intent_id}'`
+      }
+      res.json({ error })
+    } else {
+      res.json({ error: e })
+    }
+  }
 });
 
 // Milestone 2: '/refund-lesson'
@@ -168,7 +267,21 @@ app.post("/complete-lesson-payment", async (req, res) => {
 //      }
 //  }
 app.post("/refund-lesson", async (req, res) => {
-  // TODO: Integrate Stripe
+  const {payment_intent_id, amount } = req.body
+  try {
+    const refund = await stripe.refunds.create({
+      payment_intent: payment_intent_id,
+      amount }
+    )
+
+    res.json({refund: refund.id, amount})
+  } catch (e) {
+      const error = {
+        code: e.code,
+        message: e.message
+      }
+      res.json({ error })
+  }
 });
 
 // Milestone 3: Managing account info
@@ -185,7 +298,14 @@ app.get("/account-update/:customer_id", async (req, res) => {
 });
 
 app.get("/payment-method/:customer_id", async (req, res) => {
-  // TODO: Retrieve the customer's payment method for the client
+  try {
+    const paymentMethod = await  stripe.paymentMethods.retrieve(
+      req.params.customer_id
+    )
+    res.json(paymentMethod)
+  } catch (err) {
+    res.json({ error: err })
+  }
 });
 
 
@@ -227,7 +347,30 @@ app.post("/account-update", async (req, res) => {
 //  }
 //
 app.post("/delete-account/:customer_id", async (req, res) => {
-  // TODO: Integrate Stripe
+  try {
+    const cutomer = req.body.customer_id
+    let uncaptured_payments = []
+    const payments = await stripe.paymentIntents.list({
+      customer
+    });
+
+    uncaptured_payments = payments.data.map(p => p.status !== 'requires_capture')
+
+    if (uncaptured_payments.lenght) {
+      res.json({ uncaptured_payments })
+    } else {
+      const deletion = await stripe.customers.del(
+        req.body.customer_id
+      )
+      res.json(deletion)
+    }
+  } catch (e) {
+      const error = {
+        code: e.code,
+        message: e.message
+      }
+      res.json({ error })
+  }
 });
 
 

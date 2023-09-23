@@ -33,7 +33,7 @@ const UpdateCustomer = ({
       setProcessing(false);
     }
     async function setUp() {
-      const { key } = await fetch("/config").then((res) => res.json());
+      const { key } = await fetch("http://localhost:4242/config").then((res) => res.json());
       setStripePromise(loadStripe(key));
     }
     setUp();

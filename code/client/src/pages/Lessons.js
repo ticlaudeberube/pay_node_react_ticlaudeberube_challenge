@@ -2,7 +2,8 @@ import React, { useEffect, useState } from "react";
 import Header from "../components/Header";
 import RegistrationForm from "../components/RegistrationForm";
 import "../css/lessons.scss";
-
+import { Elements } from "@stripe/react-stripe-js";
+import { loadStripe } from "@stripe/stripe-js";
 const months = [
   "Jan",
   "Feb",
@@ -34,6 +35,12 @@ const Lessons = () => {
   const [sessions, setSessions] = useState([]); //info about available sessions
   const [selected, setSelected] = useState(-1); //index of selected session
   const [details, setDetails] = useState(""); //details about selected session
+  
+  const [clientSecret, setClientSecret] = useState(null);
+  const [stripePromise, setStripePromise] = useState(null);
+
+  const appearance = {};
+  const options = { appearance, clientSecret }
 
   //toggle selected session
   const toggleItem = (index) => {
@@ -62,15 +69,20 @@ const Lessons = () => {
     session.setDate(session.getDate() + 7);
     items.push(formatSession(2, "third", session, "5:00 p.m."));
     setSessions((prev) => [...prev, ...items]);
+
+    async function setUp() {
+      const { key } = await fetch("http://localhost:4242/config").then((res) => res.json());
+      setStripePromise(loadStripe(key));
+    }
+    setUp();
   }, []);
 
   return (
     <main className="main-lessons">
       <Header selected="lessons" />
-      {
-        //Component to process user info for registration.
-      }
-      <RegistrationForm selected={selected} details={details} />
+      <Elements stripe={stripePromise} options={{options}}>
+        <RegistrationForm selected={sessions[selected]} details={details} />
+      </ Elements>
       <div className="lesson-title" id="title">
         <h2>Guitar lessons</h2>
       </div>

@@ -13,15 +13,68 @@ const RegistrationForm = (props) => {
   const [customerId, setCustomerId] = useState(null);
   const [clientSecret, setClientSecret] = useState(null);
   const stripePromise = useRef(null);
-  let appearance = null;
-  // TODO: Integrate Stripe
+  let appearance = {};
+
+
+  useEffect(() => {
+    async function setUp () {
+      try {
+        const response = await fetch('http://localhost:4242/config');
+        const stripeConfig = await response.json();
+        stripePromise.current = await loadStripe(stripeConfig.key);
+      } catch (err) {
+        console.log(err.message);
+      }
+    };
+    setUp()
+  });
 
   const handleChange = async(value, field) => {
-    //TODO: Handle the checkout event
+    switch(field) {
+      case 'learnerName':
+        setLearnerName(value);
+        break;
+      case 'learnerEmail':
+        setLearnerEmail(value)
+      break;
+      default: 
+    }
   }
 
   const handleClickForPaymentElement = async () => {
-    // TODO: Setup and Load Payment Element
+    setProcessing(true)
+    const storedCustomer = JSON.parse(localStorage.getItem('customer'))
+
+    if (existingCustomer?.email === learnerEmail || storedCustomer?.email === learnerEmail) {
+      setExistingCustomer({id: storedCustomer.id, email: learnerEmail})
+      return
+    } else {
+      setExistingCustomer(null)
+    
+      try {
+        const response = await fetch('http://localhost:4242/create-setup-intent', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+              name: learnerName, 
+              email: learnerEmail,
+              customerId,
+              lesson: `${selected.date}`
+            })
+        });
+        const data = await response.json()
+        localStorage.setItem('customer', JSON.stringify(data.customer))
+        setExistingCustomer(data.customer)
+        setCustomerId(data.customer.id)
+        setClientSecret(data.clientSecret)
+      } catch (e) {
+        setError(e.message)
+      } finally {
+        setProcessing(false)
+      }
+    }
   };
 
 
@@ -30,14 +83,15 @@ const RegistrationForm = (props) => {
   if (clientSecret) {
     body = (
       <Elements stripe={stripePromise.current} options={{appearance, clientSecret}}>
-      <CardSetupForm
-        selected={selected}
-        mode="setup"
-        details={details}
-        learnerEmail={learnerEmail}
-        learnerName={learnerName}
-        customerId={customerId}
-      />
+        <CardSetupForm
+          selected={selected}
+          clientSecret={clientSecret}
+          mode="setup"
+          details={details}
+          learnerEmail={learnerEmail}
+          learnerName={learnerName}
+          customerId={customerId}
+        />
       </Elements>
     )
   } else {
@@ -84,7 +138,7 @@ const RegistrationForm = (props) => {
               <span id="button-text">Checkout</span>
             </button>
         </div>
-        {existingCustomer && (
+        { existingCustomer && (
           <div
             className="sr-field-error"
             id="customer-exists-error"
@@ -95,7 +149,7 @@ const RegistrationForm = (props) => {
             <span id="account_link">
               <b>
                 <a
-                  href={`localhost:3000/account-update/${existingCustomer.customerId}`}
+                  href={`${window.location.protocol}//${window.location.host}/account-update/${existingCustomer?.id}`}
                 >
                   account update
                 </a>
@@ -103,7 +157,7 @@ const RegistrationForm = (props) => {
             </span>
             {"\n"}
             <span id="error_message_customer_email">
-              {existingCustomer.customerEmail}
+              { existingCustomer.email}
             </span>
             .
           </div>
