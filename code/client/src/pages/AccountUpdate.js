@@ -19,10 +19,14 @@ const AccountUpdate = ({ id }) => {
     setup();
   }, [id]);
 
-  const onSuccessfulConfirmation = async (customerId) => {
-    const result = await accountUpdate(id);
+  const onSuccessfulConfirmation = async (customerId, result) => {
     if (result !== null) {
       setData(result);
+    } else {
+      const result = await accountUpdate(id);
+      if (result !== null) {
+        setData(result);
+      }
     }
   };
 
@@ -40,7 +44,7 @@ const AccountUpdate = ({ id }) => {
             <h5>We have the following card information on file for you: </h5>
             <p>
               Billing Email:&nbsp;&nbsp;
-              <span id="billing-email">{data.customer.email}</span>
+              <span id="billing-email">{data.billing_details.email}</span>
             </p>
             <p>
               Card Exp Month:&nbsp;&nbsp;
@@ -57,8 +61,8 @@ const AccountUpdate = ({ id }) => {
           </div>
           <UpdateCustomer
             customerId={id}
-            customerName={data.customer.name}
-            customerEmail={data.customer.email}
+            customerName={data.billing_details.name}
+            customerEmail={data.billing_details.email}
             onSuccessfulConfirmation={onSuccessfulConfirmation}
           />
         </div>

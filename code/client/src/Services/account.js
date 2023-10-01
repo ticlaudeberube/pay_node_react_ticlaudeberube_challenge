@@ -1,5 +1,5 @@
 export const accountUpdate = async (id) => {
-  const response = await fetch(`/payment-method/${id}`, {
+  const response = await fetch(`/account-update/${id}`, {
     method: "get",
     headers: {
       "Content-Type": "application/json",

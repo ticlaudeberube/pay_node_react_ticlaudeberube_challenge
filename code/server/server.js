@@ -66,53 +66,57 @@ app.get("/config", (req, res) => {
 
 // Milestone 1: Signing up
 // Shows the lesson sign up page.
-app.get('/lessons', (req, res) => {
-  try {
-    const path = resolve(`${process.env.STATIC_DIR}/lessons.html`);
-    if (!fs.existsSync(path)) throw Error();
-    res.sendFile(path);
-  } catch (error) {
-    const path = resolve('./public/static-file-error.html');
-    res.sendFile(path);
-  }
-});
+app.get('/email-search', async (req, res) => {
+  const email = req.query.email
+    try {
+      const result = await stripe.customers.list({ email: email})
+      res.json(result)
+    } catch (e) {
+      res.json(e)
+    }
+})
 
 app.post('/create-setup-intent', async (req, res) => {
   const stripe = require('stripe')(`${process.env.STRIPE_SECRET_KEY}`);
-    const customerId = req.body.customerId
+    const name = req.body.name
+    const email = req.body.email
     let customer = null
+    let existingCustomer = null
+    let error = null
 
-    const existingCustomer = await stripe.customers.search(
-      {
-        query: `name:\'${req.body.name}\' AND email:\'${req.body.email}\'`,
-      }
-    )
+    if (name?.length && email?.length) {
+      existingCustomer = await stripe.customers.list(
+        {
+          email: `${email}`
+        }
+      )
+    }
     
-    if (existingCustomer.data.length) {
+    if (existingCustomer?.data?.length) {
       customer = existingCustomer.data[0]
+      error = { status: 304, message: 'Customer email already exists!'}
     } else {
       customer = await stripe.customers.create({
-        name: req.body.name, 
-        email: req.body.email,
-        metadata: { 
+        name, 
+        email,
+        metadata: {
           'first_lesson': `${req.body.lesson}`,
         }
       });
     }
 
     const ephemeralKey = await stripe.ephemeralKeys.create(
-      {customer: customer.id},
+      {customer: customer?.id},
       {apiVersion: '2023-08-16'}
     );
     const setupIntent = await stripe.setupIntents.create({
       customer: customer.id,
-      // In the latest version of the API, specifying the `automatic_payment_methods` parameter is optional because Stripe enables its functionality by default.
-      // usage: 'off_session',
       automatic_payment_methods: {
         enabled: true,
       },
     })
     res.json({
+      error: error, 
       setupIntent,
       clientSecret: setupIntent.client_secret,
       ephemeralKey: ephemeralKey.secret,
@@ -175,7 +179,7 @@ app.post("/schedule-lesson", async (req, res) => {
       { payment_method: "pm_card_visa" }
     );
 
-    res.json({ payment: paymentConfirm})
+    res.json({ payment: paymentConfirm })
   } catch (e) {
     if (e.code === 'resource_missing') {
       const error = {
@@ -288,12 +292,14 @@ app.post("/refund-lesson", async (req, res) => {
 // Displays the account update page for a given customer
 app.get("/account-update/:customer_id", async (req, res) => {
   try {
-    const path = resolve(`${process.env.STATIC_DIR}/account-update.html`);
-    if (!fs.existsSync(path)) throw Error();
-    res.sendFile(path);
-  } catch (error) {
-    const path = resolve('./public/static-file-error.html');
-    res.sendFile(path);
+    const paymentMethod = await stripe.paymentMethods.list({
+      customer: req.params.customer_id,
+      type: 'card',
+    });
+    const p = paymentMethod.data.length ? paymentMethod.data[0] : null
+    res.json(p)
+  } catch (err) {
+    res.json({ error: err })
   }
 });
 
@@ -309,13 +315,113 @@ app.get("/payment-method/:customer_id", async (req, res) => {
 });
 
 
+app.post("/payment-method", async (req, res) => {
+  try {
+    const customer = req.body.customer_id
+    const new_payment_method_id = req.body.new_payment_method
+
+    const paymentMethodsList = await stripe.paymentMethods.list({
+      customer,
+      type: 'card',
+    });
+
+    paymentMethodsList.data.forEach(async (m) => {
+      if (m.id !== new_payment_method_id) {
+        await stripe.paymentMethods.detach(m.id);
+      }
+    })
+
+    const paymentMethod = await  stripe.paymentMethods.retrieve(
+      new_payment_method_id
+    )
+
+    res.json(paymentMethod)
+  } catch (err) {
+    res.json({ error: err })
+  }
+});
+
+
 app.post("/update-payment-details/:customer_id", async (req, res) => {
-  // TODO: Update the customer's payment details
+  const email = req.body.email;
+  const name = req.body.name;
+  let existingCustomerSearch = null
+  
+  if (email?.length) {
+    existingCustomerSearch = await stripe.customers.list(
+      {
+        email: `${email}`
+      }
+    )
+  }
+
+  if (existingCustomerSearch?.data?.length) {
+    res.send({ status: 304, message: 'Customer email already exists!'})
+    return
+  }
+
+  try {
+    const name = req.body.name
+    const customer = req.body.customerId
+    const metadata = req.body.metadata || {}
+    const paymentMethodId = req.body.paymentMethod
+
+    const billingPayload = {}
+    if (email?.length) billingPayload = { ...billingPayload, email }
+    if (name?.length) billingPayload = { ...billingPayload, name }
+    const paymentMethod = await stripe.paymentMethods.update(paymentMethodId,
+      { billing_details: billingPayload }
+    )
+    
+    // await stripe.paymentMethods.detach(paymentMethodId)
+
+    const payload = {}
+    if (email?.length) payload = { ...payload, email }
+    if (name?.length) payload = { ...payload, name }
+    if (metadata) payload = { ...payload, metadata }
+    const updated = await stripe.customers.update(
+      customer, {
+        ...payload,
+        invoice_settings: {
+          default_payment_method: paymentMethod.id,
+        },
+      })
+      res.json(updated)
+    } catch (e) {
+      res.json(e)
+    }
 });
 
 // Handle account updates
 app.post("/account-update", async (req, res) => {
   // TODO: Handle updates to any of the customer's account details
+  const customerId = req.body.customerId
+  const email = req.body.email
+  const name = req.body.name
+  const lesson = req.body.lesson
+
+  const existingCustomerSearch = null
+  if (email?.length) {
+    existingCustomerSearch = await stripe.customers.search(
+      {
+        query: `email:\'${email}\'`,
+      }
+    )
+  }
+
+  if (existingCustomerSearch?.data?.length) {
+    res.send({ status: 304, message: 'Customer email already exists!'})
+  } else {
+    const customer = await stripe.customers.update(
+      customerId,
+      name,
+      email
+    );
+    
+    res.json(
+      customer
+    )
+  }
 });
 
 // Milestone 3: '/delete-account'
@@ -348,21 +454,42 @@ app.post("/account-update", async (req, res) => {
 //
 app.post("/delete-account/:customer_id", async (req, res) => {
   try {
-    const cutomer = req.body.customer_id
-    let uncaptured_payments = []
+    const customer = req.params.customer_id
+
     const payments = await stripe.paymentIntents.list({
       customer
     });
 
-    uncaptured_payments = payments.data.map(p => p.status !== 'requires_capture')
+    const succeeded = []
+    const uncaptured_payments = payments.data.reduce((acc, p) => {
+      if (p.status === 'requires_capture') {
+        acc = [...acc, p.id]
+      } else if (p.status === 'succeeded') {
+        succeeded.push(p.id)
+      }
+      return acc
+    }, [])
 
-    if (uncaptured_payments.lenght) {
+    if (succeeded.length) {
+      const deletion = await stripe.customers.del(
+        customer
+      )
+      if (deletion) {
+        res.json({ deleted: deletion.deleted })
+      } else {
+        throw new Error(`cannot delete: ${customer}`)
+      }
+    } else if (uncaptured_payments?.length) {
       res.json({ uncaptured_payments })
     } else {
       const deletion = await stripe.customers.del(
-        req.body.customer_id
+        customer
       )
-      res.json(deletion)
+      if (deletion) {
+        res.json({ deleted: deletion.deleted })
+      } else {
+        throw new Error(`cannot delete: ${customer}`)
+      }
     }
   } catch (e) {
       const error = {
@@ -388,8 +515,50 @@ app.post("/delete-account/:customer_id", async (req, res) => {
 //      net_total: Total amount the store has collected from payments, minus their fees.
 // }
 //
+
 app.get("/calculate-lesson-total", async (req, res) => {
-  // TODO: Integrate Stripe
+  try {
+    var today = Math.round(new Date().getTime() / 1000);
+    var before = today - (36 * 3600);
+    // let date = new Date();  
+    // let before = date.setHours(date.getHours() - 36);
+    // before = Date.parse(date);
+
+    let pi = await stripe.paymentIntents.list({ 
+      created: { gte: before },
+    })
+    
+    const payment_total = pi.data.filter((p) => p.status === 'succeeded')
+    .reduce((acc, p) => {
+        return acc += p.amount
+    }, 0)
+
+    const amount_received = pi.data.reduce((total, p) => total = total + p.amount_received , 0)
+    
+    // Sum fees
+    let fee_total = pi.data.filter((p) => p.status === 'succeeded')
+    fee_total =  await Promise.allSettled(fee_total.map(async (p) => {
+      const pi = await stripe.paymentIntents.retrieve(
+        p.id, 
+        { expand: ['latest_charge.balance_transaction'] }
+      )
+     return pi.latest_charge.balance_transaction.fee
+    })).then((fees) => {
+      return fees.reduce((acc, fee) =>  {
+        return acc = acc + fee.value
+      }, 0)
+    })
+    // Sum net total
+    const net_total = (amount_received - fee_total)
+
+    res.json({payment_total, fee_total, net_total})
+  } catch (e) {
+    const error = {
+      code: e.code,
+      message: e.message
+    }
+    res.json({ error })
+  }
 });
 
 
@@ -426,7 +595,42 @@ app.get("/calculate-lesson-total", async (req, res) => {
 //   {},
 // ]
 app.get("/find-customers-with-failed-payments", async (req, res) => {
-  // TODO: Integrate Stripe
+  try {
+    let charges_failed = await stripe.charges.search({
+      query: 'status:\'failed\'',
+    });
+
+    let pi = await Promise.allSettled(charges_failed.data.map(async (c) => {
+      return await stripe.paymentIntents.retrieve(
+        c.payment_intent, 
+        // { expand: ['latest_charge.balance_transaction'] }
+      )  }))
+    .then((pi) => {
+      return pi
+    })
+    pi = pi.filter((p) => p.status === "failed")
+
+
+    let pm = await Promise.allSettled(charges_failed.data.map(async (c) => {
+      return await stripe.paymentMethods.retrieve(
+        c.payment_method, 
+        // { expand: ['latest_charge.balance_transaction'] }
+      )  }))
+    .then((pm) => {
+      return pm
+    })
+    pm = pm.filter((p) => p.status !== "fulfilled")
+  
+
+    res.json({ charges: charges_failed, pi, pm  })
+   } catch (e) {
+    const error = {
+      code: e.code,
+      message: e.message
+    }
+    res.json({ error })
+  }
+
 });
 
 function errorHandler(err, req, res, next) {

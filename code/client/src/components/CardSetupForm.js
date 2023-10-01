@@ -13,9 +13,10 @@ import SignupComplete from "./SignupComplete";
     const [last4, setLast4] = useState("");
     const stripe = useStripe();
     const elements = useElements();
-    const [learnerEmailUpdated, setLearnerEmailUpdated] = useState(learnerEmail);
-    const [learnerNameUpdated, setLearnerNameUpdated] =  useState(learnerName);
-    const [existingCustomer, setExistingCustomer] = useState(null);
+    const [, setExistingCustomer] = useState(null);
+    const [email] = useState(learnerEmail);
+    const [name] = useState(learnerName);
+    
 
     const handleClick = async (event) => {
       event.preventDefault()
@@ -27,48 +28,89 @@ import SignupComplete from "./SignupComplete";
       }
 
       if (!stripe || !elements) {
-        // Stripe.js hasn't yet loaded.
-        // Make sure to disable form submission until Stripe.js has loaded.
         return null;
       }
 
       setProcessing(true)
+      let result = null
+      let billing_details = {}
+      if (email?.length) billing_details = {...billing_details, email }
+      if (name?.length) billing_details = {...billing_details, name }
+      let payment_method_data = {}
+      if (Object.keys(billing_details).length) {
+        payment_method_data.billing_details = billing_details
+      }
+
+
+      let oldPaymentMethod = await fetch(`/account-update/${customerId}`, {
+        method: "get",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
 
       const { error, setupIntent } = await stripe.confirmSetup({
         elements,
         clientSecret,
         confirmParams: {
           return_url: `${window.location.href}`,
-          payment_method_data: {
-            billing_details: {
-              name: learnerName,
-              email: learnerEmail
-            }
-          },
+          payment_method_data
         },
         redirect: 'if_required'
       });
-      
+
+      if (error) {
+        setError(error.message);
+        setProcessing(false)
+        return
+      }
+        
       if (setupIntent) {
         setExistingCustomer({ id: customerId, email: learnerEmail })
       } else {
         setExistingCustomer(null)
       }
-  
-      if (error) {
-        // This point will only be reached if there is an immediate error when
-        // confirming the payment. Show error to your customer (for example, payment
-        // details incomplete)
-        setError(error.message);
-      } else {
-        if (setupIntent && setupIntent.payment_method_types.includes('card')) {
+
+      if (mode === 'update') {
+        try {
+          let result = null
+          oldPaymentMethod = await oldPaymentMethod.json()
+          result = await fetch(`http://localhost:4242/payment-method`, {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              customer_id: customerId,
+              old_payment_method: oldPaymentMethod.id,
+              new_payment_method: setupIntent.payment_method
+            })
+          })
+          if (result.error) {
+            setError(result.error.message)
+            setProcessing(false)
+            return 
+          }
+          result = await result.json()
+          onSuccessfulConfirmation(customerId, result)
+          setLast4(result.card.last4)
+          setPaymentSucceeded(true)
+        } catch (e) {
+          setError(e.message)
+        }
+      } else if (setupIntent && setupIntent.payment_method_types.includes('card')) {
           try {
-            let result = await fetch(`http://localhost:4242/payment-method/${setupIntent.payment_method}`, {
+            result = await fetch(`http://localhost:4242/payment-method/${setupIntent.payment_method}`, {
               method: 'GET',
               headers: { 
                 'Content-Type': 'application/json'
               }
             })
+            if (result.error) {
+              setError(result.error.message)
+              setProcessing(false)
+              return 
+            }
             result = await result.json()
             setLast4(result.card.last4)
             setPaymentSucceeded(true)
@@ -76,22 +118,8 @@ import SignupComplete from "./SignupComplete";
             setError(e.message)
           }
         }
-      }
-
       setProcessing(false)
     };
-
-    const handleChange = async(value, field) => {
-      switch(field) {
-        case 'learnerName':
-          setLearnerNameUpdated(value);
-          break;
-        case 'learnerEmail':
-          setLearnerEmailUpdated(value)
-          break;
-        default: 
-      }
-    }
   
     if (selected === -1) return null;
     if (paymentSucceeded) return (
@@ -119,34 +147,11 @@ import SignupComplete from "./SignupComplete";
               <div className="lesson-grid">
                 <div className="lesson-inputs">
                 <form>
-                  <div className="lesson-input-box first">
-                    <label>Name</label>
-                    <input
-                      type="text"
-                      id="name"
-                      value={learnerNameUpdated}
-                      placeholder="Name"
-                      autoComplete="cardholder"
-                      className="sr-input"
-                      onChange={(e) => handleChange(e.target.value, "learnerName")}
-                    />
-                  </div>
-                  <div className="lesson-input-box middle">
-                    <label>Email</label>
-                    <input
-                      type="text"
-                      id="email"
-                      value={learnerEmailUpdated}
-                      placeholder="Email"
-                      autoComplete="cardholder"
-                      onChange={(e) => handleChange(e.target.value, "learnerEmail")}
-                    />
-                    </div>
                     <div className="lesson-payment-element">
                       <PaymentElement id="payment-element" />
                     </div>
                     <button id="submit"  
-                        disabled={!learnerNameUpdated || !learnerEmailUpdated || processing }
+                        disabled={processing }
                         onClick={handleClick}>
                           {processing ? (
                         <div className="spinner" id="spinner"></div>

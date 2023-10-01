@@ -9,38 +9,91 @@ const UpdateCustomer = ({
   customerEmail,
   onSuccessfulConfirmation,
 }) => {
-  const [succeeded, setSucceeded] = useState(false);
   const [error, setError] = useState(null);
   const [processing, setProcessing] = useState("");
-  const [oldEmail, setOldEmail] = useState("");
-  const [oldName, setOldName] = useState("");
-  const [email, setEmail] = useState("");
-  const [name, setName] = useState("");
+  const [oldEmail, setOldEmail] = useState(customerEmail);
+  const [oldName, setOldName] = useState(customerName);
+  const [email, setEmail] = useState(customerEmail);
+  const [name, setName] = useState(customerName);
   const [stripePromise, setStripePromise] = useState(null);
-  const [stripeOptions, setStripeOptions] = useState(null);
   const [loadPaymentElement, setLoadPaymentElement] = useState(false);
+  const [existingCustomer, setExistingCustomer] = useState(null);
+  const [succeeded, setSucceeded] = useState(false);
+  const [clientSecret, setClientSecret] = useState("");
   const selected = 1;
-
+  const appearance = {}
   // TODO: Integrate Stripe
 
   //Get info to load page, User payment information, config API route in package.json "proxy"
   useEffect(() => {
-    setEmail(customerEmail);
-    setName(customerName);
-    setOldEmail(customerEmail);
-    setOldName(customerName);
     if (email !== "" && name !== "") {
       setProcessing(false);
     }
     async function setUp() {
       const { key } = await fetch("http://localhost:4242/config").then((res) => res.json());
       setStripePromise(loadStripe(key));
+    
+      let payload = {}
+      if (email?.length) payload = {...payload, email };
+      if (name?.length) payload = {...payload, name };  
+      const intent = await fetch('http://localhost:4242/create-setup-intent', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            ...payload,
+            customerId
+          })
+      });
+      const data = await intent.json()
+      localStorage.setItem('customer', JSON.stringify(data.customer))
+      setExistingCustomer(null)
+      setClientSecret(data.clientSecret)
     }
+
     setUp();
   }, []);
 
   const handleClick = async () => {
-    // TODO: Integrate Stripe
+    try {
+      if ((!email?.length && !name?.length) || (name === oldName && email === oldEmail)) {
+        setLoadPaymentElement(true)
+        setSucceeded(true)
+        return
+      }
+  
+      const response = await fetch(`http://localhost:4242/update-payment-details/${customerId}`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            customerId,
+            name,
+            email,
+            lesson: `${selected}`
+          })
+      });
+
+      const update = await response.json()
+
+      if (update.status === 304) {
+        setError(update.message)
+        return 
+      }
+      setEmail(update.email);
+      setName(update.name);
+      setOldEmail(update.email);
+      setOldName(update.name);
+      setLoadPaymentElement(true)
+      onSuccessfulConfirmation(update.id, update)
+      localStorage.setItem('customer', JSON.stringify(update))
+    } catch (e) {
+      setExistingCustomer(true)
+      setError(e.message)
+      setLoadPaymentElement(true)
+    }
   };
 
   return (
@@ -60,7 +113,7 @@ const UpdateCustomer = ({
                   placeholder="Name"
                   autoComplete="cardholder"
                   className="sr-input"
-                  value={name}
+                  value={name || ''}
                   onChange={(e) => setName(e.target.value)}
                 />
               </div>
@@ -70,7 +123,7 @@ const UpdateCustomer = ({
                   id="email"
                   placeholder="Email"
                   autoComplete="cardholder"
-                  value={email}
+                  value={email || ''}
                   onChange={(e) => setEmail(e.target.value)}
                 />
               </div>
@@ -106,7 +159,7 @@ const UpdateCustomer = ({
           </div>
         </div>
       ) : (
-        <Elements stripe={stripePromise} options={stripeOptions}>
+        <Elements stripe={stripePromise} options={{appearance, clientSecret}}>
           <CardSetupForm
             selected={selected}
             mode="update"
