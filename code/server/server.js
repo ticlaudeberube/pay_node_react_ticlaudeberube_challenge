@@ -169,11 +169,6 @@ app.post("/schedule-lesson", async (req, res) => {
       capture_method: 'manual',
     })
 
-    const paymentMethodsList = await await stripe.paymentMethods.list({
-      customer,
-      type: 'card'
-    });
-
     const paymentConfirm =  await stripe.paymentIntents.confirm(
       paymentIntent.id,
       { payment_method: "pm_card_visa" }
@@ -517,48 +512,55 @@ app.post("/delete-account/:customer_id", async (req, res) => {
 //
 
 app.get("/calculate-lesson-total", async (req, res) => {
-  try {
-    var today = Math.round(new Date().getTime() / 1000);
-    var before = today - (36 * 3600);
-    // let date = new Date();  
-    // let before = date.setHours(date.getHours() - 36);
-    // before = Date.parse(date);
-
-    let pi = await stripe.paymentIntents.list({ 
-      created: { gte: before },
-    })
+    try {
     
-    const payment_total = pi.data.filter((p) => p.status === 'succeeded')
-    .reduce((acc, p) => {
-        return acc += p.amount
-    }, 0)
+      // const today = Math.round(new Date().getTime() / 1000);
+      // const before = today - (36 * 3600);
+      // let date = new Date();  
+      // let before = date.setHours(date.getHours() - 36);
+      // before = Date.parse(date);
+      const d = new Date();
+      d.setHours(d.getHours() - 36);
 
-    const amount_received = pi.data.reduce((total, p) => total = total + p.amount_received , 0)
-    
-    // Sum fees
-    let fee_total = pi.data.filter((p) => p.status === 'succeeded')
-    fee_total =  await Promise.allSettled(fee_total.map(async (p) => {
-      const pi = await stripe.paymentIntents.retrieve(
-        p.id, 
-        { expand: ['latest_charge.balance_transaction'] }
-      )
-     return pi.latest_charge.balance_transaction.fee
-    })).then((fees) => {
-      return fees.reduce((acc, fee) =>  {
-        return acc = acc + fee.value
+      let pi = await stripe.paymentIntents.list({ 
+        created: { 
+          gte: d,
+          // lte: Date.now()
+        }
+      })
+      
+      const payment_total = pi.data.reduce((acc, p) => {
+         return ((p.status === 'succeeded' || p.status === 'requires_action') && p.description.indexOf('Lesson') > -1) 
+          ? acc = acc + p.amount_received
+          :acc
       }, 0)
-    })
-    // Sum net total
-    const net_total = (amount_received - fee_total)
+      // Sum fees
+      let fee_total = pi.data.filter((p) => p.status === 'succeeded')
+      fee_total =  await Promise.allSettled(fee_total.map(async (p) => {
+        const pi = await stripe.paymentIntents.retrieve(
+          p.id, 
+          { expand: ['latest_charge.balance_transaction'] }
+        )
+      return pi.latest_charge.balance_transaction.fee
+      })).then((fees) => {
+        return fees.reduce((acc, fee) =>  {
+          return acc = acc + fee.value
+        }, 0)
+      })
+      // Sum net total
+      
+      const amount_received = pi.data.reduce((total, p) => total = total + p.amount_received , 0)
+      const net_total = (amount_received - fee_total)
 
-    res.json({payment_total, fee_total, net_total})
-  } catch (e) {
-    const error = {
-      code: e.code,
-      message: e.message
+      res.json({payment_total, fee_total, net_total})
+
+    } catch (e) {
+      const error = {
+        code: e.code,
+        message: e.message
+      }
+      res.json({ error })
     }
-    res.json({ error })
-  }
 });
 
 
@@ -596,33 +598,57 @@ app.get("/calculate-lesson-total", async (req, res) => {
 // ]
 app.get("/find-customers-with-failed-payments", async (req, res) => {
   try {
-    let charges_failed = await stripe.charges.search({
-      query: 'status:\'failed\'',
-    });
 
-    let pi = await Promise.allSettled(charges_failed.data.map(async (c) => {
-      return await stripe.paymentIntents.retrieve(
-        c.payment_intent, 
-        // { expand: ['latest_charge.balance_transaction'] }
-      )  }))
-    .then((pi) => {
-      return pi
+    let PIs = await stripe.paymentIntents.search({
+      query: 'status:\'requires_capture\'',
     })
-    pi = pi.filter((p) => p.status === "failed")
+    // PIs = PIs.data
+    // PIs = PIs.map(pi => pi.charges.data.filter(p => p.payment_method_details.card.last4 === '0341'))
+    // PIs = PIs.filter(p => p.payment_method_details.card.last4 === '0341')
 
+    let failed = await stripe.paymentIntents.list()
+    failed = failed.data.filter(pi => pi.status === 'requires_capture')
+ 
+    async function retrievePI (id) {
+      return await stripe.paymentIntents.retrieve(id)
+    }
 
-    let pm = await Promise.allSettled(charges_failed.data.map(async (c) => {
-      return await stripe.paymentMethods.retrieve(
-        c.payment_method, 
-        // { expand: ['latest_charge.balance_transaction'] }
-      )  }))
-    .then((pm) => {
-      return pm
-    })
-    pm = pm.filter((p) => p.status !== "fulfilled")
-  
+    async function retrieveCustomer (email) {
+      return await stripe.customers.search(
+        {
+          query: `email:\'${email}\'`,
+        }
+      )
+    }
+    let result = []
+    await Promise.all(failed.map(async (f) => {
+      let pi = f
+      let c = await  retrieveCustomer(f.receipt_email)
+      c = c.data[0]
+      const outcome = f.charges[0]?.data[0]?.outcome
+      const charges = f.charges.data[0]
+      const brand =  charges?.payment_method_details.card.brand
+      const last4 = charges?.payment_method_details.card.last4
+      result.push({
+        customer: {
+          id: c?.id,
+          email: c?.email,
+          name: c?.name,
+        },
+        payment_intent: {
+          created: pi.created,
+          description: pi.description,
+          status: pi.status,
+          error: outcome?.type
+        },
+        payment_method: {
+          brand,
+          last4
+        }
+      })
+    }))
 
-    res.json({ charges: charges_failed, pi, pm  })
+    res.json(result)
    } catch (e) {
     const error = {
       code: e.code,

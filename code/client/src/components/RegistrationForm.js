@@ -61,7 +61,7 @@ const RegistrationForm = (props) => {
               name: learnerName, 
               email: learnerEmail,
               customerId,
-              lesson: `${selected.date}`
+              lesson: `${selected?.date}`
             })
         });
         const data = await response.json()
