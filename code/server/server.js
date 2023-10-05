@@ -11,6 +11,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const allitems = {};
 const fs = require('fs');
+const { ppid } = require('process');
 
 app.use(express.static(process.env.STATIC_DIR));
 
@@ -156,6 +157,11 @@ app.post('/create-setup-intent', async (req, res) => {
 app.post("/schedule-lesson", async (req, res) => {
   const customer = req.body.customer_id
   try {
+    const payment_methods = await stripe.customers.listPaymentMethods(
+      customer,
+      {type: 'card'}
+    )
+
 
     let paymentIntent = await stripe.paymentIntents.create({
       customer,
@@ -165,13 +171,12 @@ app.post("/schedule-lesson", async (req, res) => {
       metadata: { 
         'type': 'lessons-payment'
       },
-      payment_method_types: ['card'],
-      capture_method: 'manual',
+      payment_method_types: ['card']
     })
 
-    const paymentConfirm =  await stripe.paymentIntents.confirm(
+    const paymentConfirm = await stripe.paymentIntents.confirm(
       paymentIntent.id,
-      { payment_method: "pm_card_visa" }
+      { payment_method: payment_methods.data[0]?.id }
     );
 
     res.json({ payment: paymentConfirm })
@@ -513,44 +518,27 @@ app.post("/delete-account/:customer_id", async (req, res) => {
 
 app.get("/calculate-lesson-total", async (req, res) => {
     try {
-    
-      // const today = Math.round(new Date().getTime() / 1000);
-      // const before = today - (36 * 3600);
-      // let date = new Date();  
-      // let before = date.setHours(date.getHours() - 36);
-      // before = Date.parse(date);
       const d = new Date();
       d.setHours(d.getHours() - 36);
 
       let pi = await stripe.paymentIntents.list({ 
         created: { 
-          gte: d,
-          // lte: Date.now()
-        }
+          gte: d
+        },
+        expand: ['data.latest_charge.balance_transaction']
       })
       
-      const payment_total = pi.data.reduce((acc, p) => {
-         return ((p.status === 'succeeded' || p.status === 'requires_action') && p.description.indexOf('Lesson') > -1) 
-          ? acc = acc + p.amount_received
-          :acc
-      }, 0)
+      pi = pi.data.filter(p => p.status === 'succeeded' && p.description.indexOf('Lesson') > -1)
+
+      const payment_total = pi.reduce((acc, p) => acc += p.amount_received, 0)
+
       // Sum fees
-      let fee_total = pi.data.filter((p) => p.status === 'succeeded')
-      fee_total =  await Promise.allSettled(fee_total.map(async (p) => {
-        const pi = await stripe.paymentIntents.retrieve(
-          p.id, 
-          { expand: ['latest_charge.balance_transaction'] }
-        )
-      return pi.latest_charge.balance_transaction.fee
-      })).then((fees) => {
-        return fees.reduce((acc, fee) =>  {
-          return acc = acc + fee.value
-        }, 0)
-      })
+      let fee_total = pi.reduce((acc, pi) =>  {
+        return acc += pi.latest_charge.balance_transaction.fee
+      }, 0)
+
       // Sum net total
-      
-      const amount_received = pi.data.reduce((total, p) => total = total + p.amount_received , 0)
-      const net_total = (amount_received - fee_total)
+      const net_total = (payment_total - fee_total)
 
       res.json({payment_total, fee_total, net_total})
 
@@ -598,20 +586,11 @@ app.get("/calculate-lesson-total", async (req, res) => {
 // ]
 app.get("/find-customers-with-failed-payments", async (req, res) => {
   try {
-
-    let PIs = await stripe.paymentIntents.search({
-      query: 'status:\'requires_capture\'',
+    let failed = await stripe.paymentIntents.list(
+      { expand: ['data.latest_charge']
     })
-    // PIs = PIs.data
-    // PIs = PIs.map(pi => pi.charges.data.filter(p => p.payment_method_details.card.last4 === '0341'))
-    // PIs = PIs.filter(p => p.payment_method_details.card.last4 === '0341')
+    failed = failed.data.filter(pi => pi.status === "requires_payment_method")
 
-    let failed = await stripe.paymentIntents.list()
-    failed = failed.data.filter(pi => pi.status === 'requires_capture')
- 
-    async function retrievePI (id) {
-      return await stripe.paymentIntents.retrieve(id)
-    }
 
     async function retrieveCustomer (email) {
       return await stripe.customers.search(
@@ -621,12 +600,11 @@ app.get("/find-customers-with-failed-payments", async (req, res) => {
       )
     }
     let result = []
-    await Promise.all(failed.map(async (f) => {
-      let pi = f
-      let c = await  retrieveCustomer(f.receipt_email)
+    await Promise.all(failed.map(async (pi) => {
+      let c = await retrieveCustomer(pi.receipt_email)
       c = c.data[0]
-      const outcome = f.charges[0]?.data[0]?.outcome
-      const charges = f.charges.data[0]
+      const outcome = pi.charges.data[0]?.outcome
+      const charges = pi.charges.data[0]
       const brand =  charges?.payment_method_details.card.brand
       const last4 = charges?.payment_method_details.card.last4
       result.push({
@@ -638,7 +616,7 @@ app.get("/find-customers-with-failed-payments", async (req, res) => {
         payment_intent: {
           created: pi.created,
           description: pi.description,
-          status: pi.status,
+          status: pi.status === 'requires_payment_method' ? 'failed' :  pi.status,
           error: outcome?.type
         },
         payment_method: {

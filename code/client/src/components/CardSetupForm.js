@@ -41,14 +41,6 @@ import SignupComplete from "./SignupComplete";
         payment_method_data.billing_details = billing_details
       }
 
-
-      let oldPaymentMethod = await fetch(`/account-update/${customerId}`, {
-        method: "get",
-        headers: {
-          "Content-Type": "application/json",
-        },
-      });
-
       const { error, setupIntent } = await stripe.confirmSetup({
         elements,
         clientSecret,
@@ -74,7 +66,6 @@ import SignupComplete from "./SignupComplete";
       if (mode === 'update') {
         try {
           let result = null
-          oldPaymentMethod = await oldPaymentMethod.json()
           result = await fetch(`http://localhost:4242/payment-method`, {
             method: 'POST',
             headers: { 
@@ -82,7 +73,6 @@ import SignupComplete from "./SignupComplete";
             },
             body: JSON.stringify({
               customer_id: customerId,
-              old_payment_method: oldPaymentMethod.id,
               new_payment_method: setupIntent.payment_method
             })
           })
