@@ -60,7 +60,6 @@ const RegistrationForm = (props) => {
           body: JSON.stringify({
               name: learnerName, 
               email: learnerEmail,
-              customerId,
               lesson: `${selected?.date}`
             })
         });

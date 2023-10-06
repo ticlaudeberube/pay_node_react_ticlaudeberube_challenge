@@ -171,7 +171,8 @@ app.post("/schedule-lesson", async (req, res) => {
       metadata: { 
         'type': 'lessons-payment'
       },
-      payment_method_types: ['card']
+      payment_method_types: ['card'],
+      capture_method: 'manual',
     })
 
     const paymentConfirm = await stripe.paymentIntents.confirm(
@@ -518,30 +519,28 @@ app.post("/delete-account/:customer_id", async (req, res) => {
 
 app.get("/calculate-lesson-total", async (req, res) => {
     try {
-      const d = new Date();
-      d.setHours(d.getHours() - 36);
+        const d = new Date();
+        d.setHours(d.getHours() - 36);
+        let pi = await stripe.paymentIntents.list({
+          created: { 
+            gte: d
+          },
+          limit: 100,
+          expand: ['data.latest_charge.balance_transaction']
+        })
+        pi = pi.data.filter(p => p.status !== 'requires_capture' && p.metadata.type === 'lessons-payment')
 
-      let pi = await stripe.paymentIntents.list({ 
-        created: { 
-          gte: d
-        },
-        expand: ['data.latest_charge.balance_transaction']
-      })
-      
-      pi = pi.data.filter(p => p.status === 'succeeded' && p.description.indexOf('Lesson') > -1)
+        let fee_total = 0
+        const payment_total = pi.reduce((acc, p) => {
+          fee_total += p.latest_charge?.balance_transaction?.fee || 0
+          return acc = acc + p.amount_received
+        }, 0)
 
-      const payment_total = pi.reduce((acc, p) => acc += p.amount_received, 0)
+        // Sum net total
+        const net_total = (payment_total - fee_total)
 
-      // Sum fees
-      let fee_total = pi.reduce((acc, pi) =>  {
-        return acc += pi.latest_charge.balance_transaction.fee
-      }, 0)
-
-      // Sum net total
-      const net_total = (payment_total - fee_total)
-
-      res.json({payment_total, fee_total, net_total})
-
+        res.json({payment_total, fee_total, net_total})
+   
     } catch (e) {
       const error = {
         code: e.code,
@@ -587,18 +586,27 @@ app.get("/calculate-lesson-total", async (req, res) => {
 app.get("/find-customers-with-failed-payments", async (req, res) => {
   try {
     let failed = await stripe.paymentIntents.list(
-      { expand: ['data.latest_charge']
-    })
+      { expand: ['data.latest_charge']}
+    )
     failed = failed.data.filter(pi => pi.status === "requires_payment_method")
 
 
     async function retrieveCustomer (email) {
-      return await stripe.customers.search(
+      return await stripe.customers.list(
         {
-          query: `email:\'${email}\'`,
+          email: `${email}`,
         }
       )
     }
+
+    async function retrieveCustomerPaymentMethod (customer) {
+      const customerPaymentMethods = await stripe.paymentMethods.list({
+        customer,
+        type: 'card',
+      });
+      return customerPaymentMethods.data[0]
+    }
+    
     let result = []
     await Promise.all(failed.map(async (pi) => {
       let c = await retrieveCustomer(pi.receipt_email)
@@ -607,23 +615,26 @@ app.get("/find-customers-with-failed-payments", async (req, res) => {
       const charges = pi.charges.data[0]
       const brand =  charges?.payment_method_details.card.brand
       const last4 = charges?.payment_method_details.card.last4
-      result.push({
-        customer: {
-          id: c?.id,
-          email: c?.email,
-          name: c?.name,
-        },
-        payment_intent: {
-          created: pi.created,
-          description: pi.description,
-          status: pi.status === 'requires_payment_method' ? 'failed' :  pi.status,
-          error: outcome?.type
-        },
-        payment_method: {
-          brand,
-          last4
-        }
-      })
+      const customerPaymentMethod = await retrieveCustomerPaymentMethod(c.id)
+      if (charges && customerPaymentMethod.id === charges?.payment_method) {
+        result.push({
+          customer: {
+            id: c?.id,
+            email: c?.email,
+            name: c?.name,
+          },
+          payment_intent: {
+            created: pi.created,
+            description: pi.description,
+            status: charges.status,
+            error: outcome?.type
+          },
+          payment_method: {
+            brand,
+            last4
+          }
+        })
+      }
     }))
 
     res.json(result)
