@@ -7,11 +7,7 @@ const { resolve } = require('path');
 require('dotenv').config({ path: './.env' });
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const cors = require('cors');
-const { v4: uuidv4 } = require('uuid');
-
-const allitems = {};
 const fs = require('fs');
-const { ppid } = require('process');
 
 app.use(express.static(process.env.STATIC_DIR));
 
@@ -583,58 +579,65 @@ app.get("/calculate-lesson-total", async (req, res) => {
 //   {},
 //   {},
 // ]
+
 app.get("/find-customers-with-failed-payments", async (req, res) => {
   try {
-    let failed = await stripe.paymentIntents.list(
-      { expand: ['data.latest_charge']}
-    )
-    failed = failed.data.filter(pi => pi.status === "requires_payment_method")
-
-
-    async function retrieveCustomer (email) {
-      return await stripe.customers.list(
-        {
-          email: `${email}`,
-        }
-      )
+    const d = new Date();
+    d.setHours(d.getHours() - 36);
+    let failed = []
+    let previousSearch
+    let listResult = { has_more: true }
+    let query = {
+      expand: ['data.latest_charge', 'data.customer', 'data.payment_method'],
+      limit: 100, // default
+      created: { 
+        gte: d
+      }
     }
 
-    async function retrieveCustomerPaymentMethod (customer) {
-      const customerPaymentMethods = await stripe.paymentMethods.list({
-        customer,
-        type: 'card',
-      });
-      return customerPaymentMethods.data[0]
+    async function searchPaymentsList (query) {
+      previousSearch = { ...query }
+      const result = await stripe.paymentIntents.list(query)
+      listResult = result
+      failed = failed.concat(listResult.data)
+      query.starting_after = failed[failed.length-1]?.id
+      return result
     }
+    
+    await searchPaymentsList(query)
+    while (listResult.has_more) {
+      if (query?.starting_after !== previousSearch.starting_after) {
+        await searchPaymentsList(query)
+      }
+    }
+    
+    failed = failed.filter(pi => pi.status === "requires_payment_method")
+
     
     let result = []
     await Promise.all(failed.map(async (pi) => {
-      let c = await retrieveCustomer(pi.receipt_email)
-      c = c.data[0]
-      const outcome = pi.charges.data[0]?.outcome
+      const customer = pi.customer
       const charges = pi.charges.data[0]
+      const outcome = charges.outcome
       const brand =  charges?.payment_method_details.card.brand
       const last4 = charges?.payment_method_details.card.last4
-      const customerPaymentMethod = await retrieveCustomerPaymentMethod(c.id)
-      if (charges && customerPaymentMethod.id === charges?.payment_method) {
-        result.push({
-          customer: {
-            id: c?.id,
-            email: c?.email,
-            name: c?.name,
-          },
-          payment_intent: {
-            created: pi.created,
-            description: pi.description,
-            status: charges.status,
-            error: outcome?.type
-          },
-          payment_method: {
-            brand,
-            last4
-          }
-        })
-      }
+      result.push({
+        customer: {
+          id: customer?.id,
+          email: customer?.email,
+          name: customer?.name,
+        },
+        payment_intent: {
+          created: pi.created,
+          description: pi.description,
+          status: charges.status,
+          error: outcome?.type
+        },
+        payment_method: {
+          brand,
+          last4
+        }
+      })
     }))
 
     res.json(result)
